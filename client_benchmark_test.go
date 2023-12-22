@@ -156,7 +156,10 @@ func BenchmarkClient(b *testing.B) {
 				if err != nil {
 					b.Errorf("error sending benchmark request: %v", err)
 				}
-				defer lazyhttp.NoopBodyCloser(res.Body)
+				defer func() {
+					_, _ = io.Copy(io.Discard, res.Body)
+					res.Body.Close()
+				}()
 			}(&wg)
 		}
 		wg.Wait()
@@ -191,12 +194,6 @@ func BenchmarkClientComplex(b *testing.B) {
 	client := lazyhttp.New(
 		lazyhttp.WithHost(addr),
 		lazyhttp.WithHttpClient(httpClient),
-		lazyhttp.WithRetryPolicy(func(r *http.Response) bool {
-			return false
-		}),
-		lazyhttp.WithBackoffPolicy(
-			func() lazyhttp.Backoff { return lazyhttp.NewLimitedTriesBackoff(0*time.Second, 0) },
-		),
 		lazyhttp.WithRateLimiter(ratelimit.NewTokenBucketRateLimiter(*time.NewTicker(time.Millisecond * 250), 1000, time.Second*30)),
 		lazyhttp.WithPreRequestHooks(func(req *http.Request) error {
 			return nil
@@ -234,7 +231,10 @@ func BenchmarkClientComplex(b *testing.B) {
 				if err != nil {
 					b.Errorf("error sending benchmark request: %v", err)
 				}
-				defer lazyhttp.NoopBodyCloser(res.Body)
+				defer func() {
+					_, _ = io.Copy(io.Discard, res.Body)
+					res.Body.Close()
+				}()
 			}(&wg)
 		}
 		wg.Wait()

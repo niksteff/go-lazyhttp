@@ -81,8 +81,6 @@ type client struct {
 	httpClient       *http.Client       // the underlying http client, this can be configured
 	rateLimiter      RateLimiter        // the rate limiter, this can be configured
 	preReqHooks      []PreRequestHook   // functions that are ran before the request is made
-	retryPolicy      RetryPolicy        // function that is ran after the response is received to decide if the request should be retried
-	newBackoffPolicy func() Backoff     // a function that returns a new instance of a backoff implementation
 	postRespHooks    []PostResponseHook // functions that are ran after the response is received
 	authenticator    Authenticator      // authenticator that is used to authenticate each request
 	host             *url.URL           // the host url that is used for all requests
@@ -137,28 +135,6 @@ func WithHost(host *url.URL) Option {
 	}
 }
 
-// WithRetryPolicy sets a function that is called after the response is received
-// it decides whether to retry the request based on the response. You have to
-// implement this hook yourself. The pkg provides a basic NoopRetryHook that
-// will never perform a retry.
-func WithRetryPolicy(hook RetryPolicy) Option {
-	return func(c *client) *client {
-		c.retryPolicy = hook
-		return c
-	}
-}
-
-// WithBackoffPolicy sets a function that returns a new instance of a `Backoff`
-// implementation on each new request. The pkg provides basic backoff mechanisms
-// you can use. If you want to implement your own backoff mechanism you can do
-// so by implementing the `Backoff` interface yourself.
-func WithBackoffPolicy(backoff func() Backoff) Option {
-	return func(c *client) *client {
-		c.newBackoffPolicy = backoff
-		return c
-	}
-}
-
 // New creates a new client with the given options. If no options are
 // given sensible defaults are selected.
 func New(opts ...Option) *client {
@@ -172,8 +148,6 @@ func New(opts ...Option) *client {
 		httpClient:       httpClient,
 		rateLimiter:      nil,                                        // no default rate limiter
 		preReqHooks:      []PreRequestHook{},                         // no default pre request hooks
-		retryPolicy:      nil,                                        // by default never retry anything
-		newBackoffPolicy: func() Backoff { return NewNoopBackoff() }, // default backoff implementation is a non operative backoff
 		postRespHooks:    []PostResponseHook{},                       // no default post response hooks
 		authenticator:    nil,                                        // no default authenticator
 	}
@@ -256,62 +230,6 @@ func (c *client) Do(req *http.Request) (*http.Response, error) {
 		return nil, RequestError{
 			Err:     err,
 			Request: req,
-		}
-	}
-
-	// handle all retry operations
-	if c.retryPolicy != nil {
-		// create a new backoff instance for this request
-		bop := c.newBackoffPolicy()
-
-		// check if the retry hook wants to perform a retry
-		for c.retryPolicy(res) {
-			var err error
-
-			// want to perform a retry so check the backoff implementation if
-			// a retry is still possible
-			t, ok := bop.Backoff()
-			if !ok {
-				return res, BackoffError{
-					Err: fmt.Errorf("error backing off: %w", err),
-				}
-			}
-
-			// wait for the backoff deadline
-			timer := time.NewTimer(t)
-
-			// run a func that returns as soon as either the context is done or
-			// we received a response from the request.
-			res, err = func(res *http.Response) (*http.Response, error) {
-				for {
-					// we are using a timer so we are able to concurrently listen
-					// on the context and the timer. This is not possible with
-					// a sleep.
-					select {
-					case <-ctx.Done():
-						return res, ctx.Err()
-					case <-timer.C:
-						// TODO: timeout? memory leak?
-						// TODO: retry authentication etc?
-						// now execute the request without all prior hooks etc.
-						// because we already did that.
-						res, err = c.httpClient.Do(req)
-						if err != nil {
-							return nil, RequestError{
-								Err:     fmt.Errorf("error making http request: %w", err),
-								Request: req,
-							}
-						}
-
-						// stop the timer because we got our one tick
-						timer.Stop()
-
-						// return from the inner function and overwrite the
-						// existing response object.
-						return res, nil
-					}
-				}
-			}(res)
 		}
 	}
 

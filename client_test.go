@@ -57,11 +57,15 @@ func TestBasicRequest(t *testing.T) {
 	if err != nil {
 		t.Errorf("unexpected error: %s", err)
 	}
-	
+
 	res, err := client.Do(req)
 	if err != nil {
 		t.Errorf("unexpected error: %s", err)
 	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, res.Body)
+		res.Body.Close()
+	}()
 
 	type testResponse struct {
 		Value string
@@ -123,6 +127,10 @@ func TestWithHost(t *testing.T) {
 		t.Errorf("unexpected error: %s", err)
 		return
 	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, res.Body)
+		res.Body.Close()
+	}()
 
 	type testResponse struct {
 		Value string
@@ -177,8 +185,7 @@ func TestRetryConcept(t *testing.T) {
 func TestRetryHookMakeRetry(t *testing.T) {
 	done, ok := t.Deadline()
 	if !ok {
-		t.Errorf("no deadline set")
-		return
+		done = time.Now().Add(30 * time.Second)
 	}
 
 	ctx, cancel := context.WithDeadline(context.Background(), done)
@@ -190,11 +197,21 @@ func TestRetryHookMakeRetry(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		reqCounter = reqCounter + 1
+		
+		bb, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		defer r.Body.Close()
+
+		t.Logf("request body: %s", string(bb))
+		
 		if reqCounter == expectedTries {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-
+		
 		w.WriteHeader(http.StatusServiceUnavailable)
 	})
 
@@ -207,19 +224,24 @@ func TestRetryHookMakeRetry(t *testing.T) {
 		return
 	}
 
-	client := lazyhttp.New(
-		lazyhttp.WithHost(addr),
-		// the retry hook looks for a status code of 503 and will return when found
+	httpTransport := lazyhttp.NewTransport(
 		lazyhttp.WithRetryPolicy(func(res *http.Response) bool {
 			return res.StatusCode == http.StatusServiceUnavailable
 		}),
-		// the backoff implementation will wait 25ms between each retry and will try 5 times
 		lazyhttp.WithBackoffPolicy(func() lazyhttp.Backoff {
-			return lazyhttp.NewLimitedTriesBackoff(250*time.Millisecond, expectedTries)
+			return lazyhttp.NewLimitedTriesBackoff(50*time.Millisecond, expectedTries)
 		}),
 	)
+	httpClient := http.DefaultClient
+	httpClient.Transport = httpTransport
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "/", nil)
+	client := lazyhttp.New(
+		lazyhttp.WithHttpClient(httpClient),
+		lazyhttp.WithHost(addr),
+	)
+
+	payload := bytes.NewBuffer([]byte(`{"value": "test"}`))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "/", payload)
 	if err != nil {
 		t.Errorf("did not expect error creating request: %+v", err)
 		return
@@ -231,6 +253,10 @@ func TestRetryHookMakeRetry(t *testing.T) {
 		t.Errorf("did not expect error making request: %+v", err)
 		return
 	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, res.Body)
+		res.Body.Close()
+	}()
 
 	if res.StatusCode != http.StatusOK {
 		t.Errorf("expected status code %d but got: %d", http.StatusOK, res.StatusCode)
@@ -314,6 +340,10 @@ func TestAuthenticate(t *testing.T) {
 		t.Errorf("did not expect error making request: %+v", err)
 		return
 	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, res.Body)
+		res.Body.Close()
+	}()
 
 	if res.StatusCode != http.StatusOK {
 		t.Errorf("expected status code %d but got: %d", http.StatusOK, res.StatusCode)
@@ -389,6 +419,10 @@ func TestPreRequestHooks(t *testing.T) {
 		t.Errorf("did not expect error making request: %+v", err)
 		return
 	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, res.Body)
+		res.Body.Close()
+	}()
 
 	if res.StatusCode != http.StatusOK {
 		t.Errorf("expected status code %d but got: %d", http.StatusOK, res.StatusCode)
@@ -479,6 +513,10 @@ func TestPostResponseHooks(t *testing.T) {
 		t.Errorf("did not expect error making request: %+v", err)
 		return
 	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, res.Body)
+		res.Body.Close()
+	}()
 
 	if res.StatusCode != http.StatusOK {
 		t.Errorf("expected status code %d but got: %d", http.StatusOK, res.StatusCode)
@@ -553,6 +591,10 @@ func TestRateLimiter(t *testing.T) {
 		if err != nil {
 			t.Errorf("did not expect error making request: %+v", err)
 		}
+		defer func() {
+			_, _ = io.Copy(io.Discard, res.Body)
+			res.Body.Close()
+		}()
 
 		if requestCount < expectedReqCount && res.StatusCode != http.StatusTooManyRequests {
 			t.Errorf("expected status code %d but got: %d", http.StatusTooManyRequests, res.StatusCode)

@@ -1,6 +1,7 @@
 package lazyhttp
 
 import (
+	"log"
 	"net/http"
 	"time"
 )
@@ -33,7 +34,9 @@ type transport struct {
 
 func NewTransport(opts ...TransportOption) *transport {
 	t := &transport{
-		transport: http.DefaultTransport.(*http.Transport).Clone(),
+		transport:     http.DefaultTransport.(*http.Transport).Clone(),
+		retryPolicy:   func(res *http.Response) bool { return false },
+		backoffPolicy: func() Backoff { return NewNoopBackoff() },
 	}
 
 	for _, opt := range opts {
@@ -79,6 +82,7 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	// TODO: buffer the body for retries?
 	for t.retryPolicy(res) {
+		log.Printf("retrying request %s %s", req.Method, req.URL)
 		td, ok := backoffPolicy.Backoff()
 		if !ok {
 			return res, nil

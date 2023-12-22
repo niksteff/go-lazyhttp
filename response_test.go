@@ -122,6 +122,10 @@ func TestDecodeJsonFromResponse(t *testing.T) {
 		t.Errorf("unexpected error: %v", err)
 		return
 	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, res.Body)
+		res.Body.Close()
+	}()
 
 	var resObj testRes
 	err = lazyhttp.DecodeJson(res.Body, &resObj)
